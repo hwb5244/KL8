@@ -947,7 +947,27 @@ with tabs[5]:
         max_hit_rate = max(core_hit_rates) if core_hit_rates else 0
         min_hit_rate = min(core_hit_rates) if core_hit_rates else 0
         
-        # 计算组合命中统计
+        # 统计核心池命中数量分布
+        hit_counts = [hr['core_hit_count'] for hr in hit_rates.values()]
+        hit_counts_dist = Counter(hit_counts)
+        
+        # 统计8码、6码、3码中奖个数的次数分布
+        eight_hit_dist = Counter()
+        six_hit_dist = Counter()
+        three_hit_dist = Counter()
+        
+        for hr in hit_rates.values():
+            # 统计8码所有组合的命中次数分布
+            for combo in hr['combinations']['eight_code']:
+                eight_hit_dist[combo['hit_count']] += 1
+            # 统计6码所有组合的命中次数分布
+            for combo in hr['combinations']['six_code']:
+                six_hit_dist[combo['hit_count']] += 1
+            # 统计3码所有组合的命中次数分布
+            for combo in hr['combinations']['three_code']:
+                three_hit_dist[combo['hit_count']] += 1
+        
+        # 计算组合最佳命中统计
         eight_max_hits = []
         six_max_hits = []
         three_max_hits = []
@@ -964,11 +984,7 @@ with tabs[5]:
         avg_six_hit = sum(six_max_hits) / len(six_max_hits) if six_max_hits else 0
         avg_three_hit = sum(three_max_hits) / len(three_max_hits) if three_max_hits else 0
         
-        # 统计核心池命中数量分布
-        hit_counts = [hr['core_hit_count'] for hr in hit_rates.values()]
-        hit_counts_dist = Counter(hit_counts)
-        
-        # 显示统计卡片
+        # 显示统计卡片（第一行）
         col_stats1, col_stats2, col_stats3 = st.columns(3)
         with col_stats1:
             st.markdown(f'''
@@ -1001,17 +1017,38 @@ with tabs[5]:
             </div>
             ''', unsafe_allow_html=True)
         
-        # 命中率趋势图
+        # 显示8码、6码、3码中奖个数的次数分布（第二行）
         st.divider()
-        st.subheader('📈 命中率趋势')
+        st.subheader('🎯 组合命中次数分布')
         
-        # 按日期排序
-        sorted_hit_rates = sorted(hit_rates.values(), key=lambda x: x['saved_at'])
-        dates = [hr['saved_at'][:10] for hr in sorted_hit_rates]
-        rates = [hr['core_hit_rate'] for hr in sorted_hit_rates]
+        col_eight, col_six, col_three = st.columns(3)
         
-        trend_data = pd.DataFrame({'日期': dates, '命中率(%)': rates})
-        st.line_chart(trend_data.set_index('日期'), color='#FF4B4B', use_container_width=True)
+        with col_eight:
+            st.markdown(f'''
+            <div style="background-color: #ffebee; padding: 16px; border-radius: 8px;">
+                <h4 style="margin-top: 0; color: #c62828;">🔥 8码命中分布</h4>
+                <p style="font-size: 14px;">各命中个数出现次数</p>
+                {''.join([f'<p>{k}个: {v}次</p>' for k, v in sorted(eight_hit_dist.items())])}
+            </div>
+            ''', unsafe_allow_html=True)
+        
+        with col_six:
+            st.markdown(f'''
+            <div style="background-color: #fff3e0; padding: 16px; border-radius: 8px;">
+                <h4 style="margin-top: 0; color: #ef6c00;">🌡️ 6码命中分布</h4>
+                <p style="font-size: 14px;">各命中个数出现次数</p>
+                {''.join([f'<p>{k}个: {v}次</p>' for k, v in sorted(six_hit_dist.items())])}
+            </div>
+            ''', unsafe_allow_html=True)
+        
+        with col_three:
+            st.markdown(f'''
+            <div style="background-color: #e3f2fd; padding: 16px; border-radius: 8px;">
+                <h4 style="margin-top: 0; color: #1565c0;">💧 3码命中分布</h4>
+                <p style="font-size: 14px;">各命中个数出现次数</p>
+                {''.join([f'<p>{k}个: {v}次</p>' for k, v in sorted(three_hit_dist.items())])}
+            </div>
+            ''', unsafe_allow_html=True)
         
         st.divider()
         
