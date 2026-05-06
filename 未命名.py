@@ -937,6 +937,85 @@ with tabs[5]:
     hit_rates = load_all_hit_rates()
     
     if hit_rates:
+        # ==================== 命中率统计板块 ====================
+        st.subheader('📊 命中率统计')
+        
+        # 计算整体统计数据
+        total_records = len(hit_rates)
+        core_hit_rates = [hr['core_hit_rate'] for hr in hit_rates.values()]
+        avg_hit_rate = sum(core_hit_rates) / total_records if total_records > 0 else 0
+        max_hit_rate = max(core_hit_rates) if core_hit_rates else 0
+        min_hit_rate = min(core_hit_rates) if core_hit_rates else 0
+        
+        # 计算组合命中统计
+        eight_max_hits = []
+        six_max_hits = []
+        three_max_hits = []
+        
+        for hr in hit_rates.values():
+            eight_best = max(hr['combinations']['eight_code'], key=lambda x: x['hit_count'])['hit_count']
+            six_best = max(hr['combinations']['six_code'], key=lambda x: x['hit_count'])['hit_count']
+            three_best = max(hr['combinations']['three_code'], key=lambda x: x['hit_count'])['hit_count']
+            eight_max_hits.append(eight_best)
+            six_max_hits.append(six_best)
+            three_max_hits.append(three_best)
+        
+        avg_eight_hit = sum(eight_max_hits) / len(eight_max_hits) if eight_max_hits else 0
+        avg_six_hit = sum(six_max_hits) / len(six_max_hits) if six_max_hits else 0
+        avg_three_hit = sum(three_max_hits) / len(three_max_hits) if three_max_hits else 0
+        
+        # 统计核心池命中数量分布
+        hit_counts = [hr['core_hit_count'] for hr in hit_rates.values()]
+        hit_counts_dist = Counter(hit_counts)
+        
+        # 显示统计卡片
+        col_stats1, col_stats2, col_stats3 = st.columns(3)
+        with col_stats1:
+            st.markdown(f'''
+            <div style="background-color: #e3f2fd; padding: 16px; border-radius: 8px;">
+                <h4 style="margin-top: 0; color: #1565c0;">📊 统计概览</h4>
+                <p style="font-size: 20px; font-weight: bold;">共 {total_records} 条记录</p>
+                <p>平均命中率：{avg_hit_rate:.1f}%</p>
+                <p>最高命中率：{max_hit_rate:.1f}%</p>
+                <p>最低命中率：{min_hit_rate:.1f}%</p>
+            </div>
+            ''', unsafe_allow_html=True)
+        
+        with col_stats2:
+            st.markdown(f'''
+            <div style="background-color: #e8f5e8; padding: 16px; border-radius: 8px;">
+                <h4 style="margin-top: 0; color: #2e7d32;">🎯 组合最佳命中</h4>
+                <p style="font-size: 16px; font-weight: bold;">平均最佳命中</p>
+                <p>8码：{avg_eight_hit:.1f} 个</p>
+                <p>6码：{avg_six_hit:.1f} 个</p>
+                <p>3码：{avg_three_hit:.1f} 个</p>
+            </div>
+            ''', unsafe_allow_html=True)
+        
+        with col_stats3:
+            st.markdown(f'''
+            <div style="background-color: #fff3e0; padding: 16px; border-radius: 8px;">
+                <h4 style="margin-top: 0; color: #ef6c00;">📈 核心池命中分布</h4>
+                <p style="font-size: 14px;">命中数量统计</p>
+                {''.join([f'<p>{k}个: {v}次 ({v/total_records*100:.0f}%)</p>' for k, v in sorted(hit_counts_dist.items())])}
+            </div>
+            ''', unsafe_allow_html=True)
+        
+        # 命中率趋势图
+        st.divider()
+        st.subheader('📈 命中率趋势')
+        
+        # 按日期排序
+        sorted_hit_rates = sorted(hit_rates.values(), key=lambda x: x['saved_at'])
+        dates = [hr['saved_at'][:10] for hr in sorted_hit_rates]
+        rates = [hr['core_hit_rate'] for hr in sorted_hit_rates]
+        
+        trend_data = pd.DataFrame({'日期': dates, '命中率(%)': rates})
+        st.line_chart(trend_data.set_index('日期'), color='#FF4B4B', use_container_width=True)
+        
+        st.divider()
+        
+        # ==================== 原有代码 ====================
         st.subheader('📑 所有命中率记录概览')
         
         overview_data = []
