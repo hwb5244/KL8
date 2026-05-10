@@ -5,6 +5,301 @@ from collections import defaultdict, Counter
 import os
 from datetime import datetime
 import json
+import urllib.request
+import urllib.error
+
+# ==================== 【模块0】GitHub Gist API 云端持久化配置 ====================
+GIST_CONFIG_KEY = 'gist_config'
+
+def get_gist_config():
+    """获取 Gist 配置"""
+    if GIST_CONFIG_KEY not in st.session_state:
+        st.session_state[GIST_CONFIG_KEY] = {
+            'token': '',
+            'lottery_gist_id': '',
+            'predictions_gist_id': '',
+            'hitrates_gist_id': ''
+        }
+    return st.session_state[GIST_CONFIG_KEY]
+
+def save_gist_config(config):
+    """保存 Gist 配置"""
+    st.session_state[GIST_CONFIG_KEY] = config
+
+def github_api_request(url, data=None, token=None, method=None):
+    """通用的 GitHub API 请求"""
+    headers = {
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    if token:
+        headers['Authorization'] = f'token {token}'
+    if data:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(data).encode('utf-8')
+        method = method or 'PATCH'
+    else:
+        method = method or 'GET'
+    
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode('utf-8')), response.status
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8') if e.fp else ''
+        return {'error': error_body}, e.code
+    except urllib.error.URLError as e:
+        return {'error': str(e)}, -1
+
+def get_or_create_gist(token, filename, content, description="快乐8预测系统数据"):
+    """获取或创建 Gist（如果已存在则更新）"""
+    if not token:
+        return None, 'No token provided'
+    
+    url = f'https://api.github.com/gists'
+    
+    headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': f'token {token}',
+        'Content-Type': 'application/json'
+    }
+    
+    data = json.dumps({
+        'description': description,
+        'public': False,
+        'files': {
+            filename: {
+                'content': content
+            }
+        }
+    }).encode('utf-8')
+    
+    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+    
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            return result['id'], None
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return None, 'Invalid GitHub Token'
+        elif e.code == 404:
+            return None, 'Not found'
+        else:
+            return None, f'HTTP Error: {e.code}'
+    except urllib.error.URLError as e:
+        return None, f'Network Error: {str(e)}'
+
+def update_gist_content(token, gist_id, filename, content):
+    """更新 Gist 内容"""
+    if not token or not gist_id:
+        return False, 'Missing token or gist_id'
+    
+    url = f'https://api.github.com/gists/{gist_id}'
+    
+    headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': f'token {token}',
+        'Content-Type': 'application/json'
+    }
+    
+    data = json.dumps({
+        'files': {
+            filename: {
+                'content': content
+            }
+        }
+    }).encode('utf-8')
+    
+    req = urllib.request.Request(url, data=data, headers=headers, method='PATCH')
+    
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return True, None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False, 'Gist not found'
+        else:
+            return False, f'HTTP Error: {e.code}'
+    except urllib.error.URLError as e:
+        return False, f'Network Error: {str(e)}'
+
+def read_gist_content(token, gist_id, filename):
+    """读取 Gist 内容"""
+    if not token or not gist_id:
+        return None, 'Missing token or gist_id'
+    
+    url = f'https://api.github.com/gists/{gist_id}'
+    
+    headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': f'token {token}'
+    }
+    
+    req = urllib.request.Request(url, headers=headers, method='GET')
+    
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            if filename in result['files']:
+                return result['files'][filename]['content'], None
+            else:
+                return None, 'File not found in gist'
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, 'Gist not found'
+        else:
+            return None, f'HTTP Error: {e.code}'
+    except urllib.error.URLError as e:
+        return None, f'Network Error: {str(e)}'
+
+def cloud_save_lottery_data(df, config):
+    """云端保存基础号码库"""
+    if not config['token']:
+        return False, 'No token configured'
+    
+    csv_content = df.to_csv()
+    
+    if config['lottery_gist_id']:
+        success, error = update_gist_content(
+            config['token'],
+            config['lottery_gist_id'],
+            'lottery_data.csv',
+            csv_content
+        )
+        if success:
+            return True, None
+        if 'not found' in str(error).lower():
+            config['lottery_gist_id'] = ''
+        else:
+            return False, error
+    
+    gist_id, error = get_or_create_gist(
+        config['token'],
+        'lottery_data.csv',
+        csv_content,
+        '快乐8预测系统-基础号码库'
+    )
+    
+    if gist_id:
+        config['lottery_gist_id'] = gist_id
+        return True, None
+    else:
+        return False, error
+
+def cloud_load_lottery_data(config):
+    """云端加载基础号码库"""
+    if not config['token'] or not config['lottery_gist_id']:
+        return None
+    
+    content, error = read_gist_content(
+        config['token'],
+        config['lottery_gist_id'],
+        'lottery_data.csv'
+    )
+    
+    if content:
+        from io import StringIO
+        df = pd.read_csv(StringIO(content), index_col='期号', dtype={'期号': str})
+        return df
+    return None
+
+def cloud_save_predictions(predictions_data, config):
+    """云端保存所有预测方案"""
+    if not config['token']:
+        return False, 'No token configured'
+    
+    content = json.dumps(predictions_data, ensure_ascii=False, indent=2)
+    
+    if config['predictions_gist_id']:
+        success, error = update_gist_content(
+            config['token'],
+            config['predictions_gist_id'],
+            'predictions.json',
+            content
+        )
+        if success:
+            return True, None
+        if 'not found' in str(error).lower():
+            config['predictions_gist_id'] = ''
+        else:
+            return False, error
+    
+    gist_id, error = get_or_create_gist(
+        config['token'],
+        'predictions.json',
+        content,
+        '快乐8预测系统-预测方案'
+    )
+    
+    if gist_id:
+        config['predictions_gist_id'] = gist_id
+        return True, None
+    else:
+        return False, error
+
+def cloud_load_predictions(config):
+    """云端加载所有预测方案"""
+    if not config['token'] or not config['predictions_gist_id']:
+        return None
+    
+    content, error = read_gist_content(
+        config['token'],
+        config['predictions_gist_id'],
+        'predictions.json'
+    )
+    
+    if content:
+        return json.loads(content)
+    return None
+
+def cloud_save_hit_rates(hit_rates_data, config):
+    """云端保存所有命中率记录"""
+    if not config['token']:
+        return False, 'No token configured'
+    
+    content = json.dumps(hit_rates_data, ensure_ascii=False, indent=2)
+    
+    if config['hitrates_gist_id']:
+        success, error = update_gist_content(
+            config['token'],
+            config['hitrates_gist_id'],
+            'hit_rates.json',
+            content
+        )
+        if success:
+            return True, None
+        if 'not found' in str(error).lower():
+            config['hitrates_gist_id'] = ''
+        else:
+            return False, error
+    
+    gist_id, error = get_or_create_gist(
+        config['token'],
+        'hit_rates.json',
+        content,
+        '快乐8预测系统-命中率记录'
+    )
+    
+    if gist_id:
+        config['hitrates_gist_id'] = gist_id
+        return True, None
+    else:
+        return False, error
+
+def cloud_load_hit_rates(config):
+    """云端加载所有命中率记录"""
+    if not config['token'] or not config['hitrates_gist_id']:
+        return None
+    
+    content, error = read_gist_content(
+        config['token'],
+        config['hitrates_gist_id'],
+        'hit_rates.json'
+    )
+    
+    if content:
+        return json.loads(content)
+    return None
 
 # ==================== 【模块1】全局配置与数据持久化 ====================
 st.set_page_config(
@@ -139,9 +434,27 @@ INITIAL_DATA = [
 
 # 数据持久化函数
 def init_lottery_data():
-    """初始化或加载基础号码库"""
+    """初始化或加载基础号码库（优先云端，后本地）"""
+    config = get_gist_config()
+    
+    if config['token']:
+        cloud_df = cloud_load_lottery_data(config)
+        if cloud_df is not None:
+            cloud_df = cloud_df.sort_index(ascending=True)
+            local_df = None
+            if os.path.exists('lottery_data_v2.csv'):
+                local_df = pd.read_csv('lottery_data_v2.csv', index_col='期号', dtype={'期号': str})
+                local_df = local_df.sort_index(ascending=True)
+            
+            if local_df is not None:
+                if len(cloud_df) >= len(local_df):
+                    save_lottery_data(cloud_df)
+                    return cloud_df
+                else:
+                    return local_df
+            return cloud_df
+    
     if not os.path.exists('lottery_data_v2.csv'):
-        # 首次运行，使用预加载数据
         df = pd.DataFrame(INITIAL_DATA, columns=['期号'] + [f'第{i}位' for i in range(1, 21)])
         df['期号'] = df['期号'].astype(str)
         df.set_index('期号', inplace=True)
@@ -149,38 +462,61 @@ def init_lottery_data():
         df.to_csv('lottery_data_v2.csv')
         return df
     else:
-        # 加载已有数据
         df = pd.read_csv('lottery_data_v2.csv', index_col='期号', dtype={'期号': str})
         df = df.sort_index(ascending=True)
         return df
 
 def save_lottery_data(df):
-    """保存基础号码库到本地"""
+    """保存基础号码库到本地并同步云端"""
     df.to_csv('lottery_data_v2.csv')
-    st.success('✅ 数据已成功保存到本地 lottery_data_v2.csv')
+    config = get_gist_config()
+    if config['token']:
+        with st.spinner('正在同步到云端...'):
+            success, error = cloud_save_lottery_data(df, config)
+            if success:
+                save_gist_config(config)
+                st.success('✅ 数据已成功保存到本地 lottery_data_v2.csv，并已同步到云端')
+            else:
+                st.warning(f'⚠️ 数据已保存到本地，但云端同步失败：{error}')
+                st.info('请检查 GitHub Token 是否有效')
+    else:
+        st.success('✅ 数据已成功保存到本地 lottery_data_v2.csv')
 
 def save_prediction(prediction_data, period):
-    """保存预测方案到本地（基于期号存储，确保相同期号只保存一次）"""
+    """保存预测方案到本地并同步云端"""
     if not os.path.exists('predictions'):
         os.makedirs('predictions')
     
-    # 使用期号作为文件名，确保相同期号只存储一份
     filename = f'predictions/{period}_prediction.json'
     
-    # 如果文件已存在，检查数据是否相同，相同则不更新
     if os.path.exists(filename):
         with open(filename, 'r', encoding='utf-8') as f:
             existing_data = json.load(f)
         if existing_data.get('step5_core_pool') == prediction_data.get('step5_core_pool') and \
            existing_data.get('step6_combinations') == prediction_data.get('step6_combinations'):
-            return filename  # 数据相同，不更新
+            return filename
     
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(prediction_data, f, ensure_ascii=False, indent=2)
+    
+    sync_predictions_to_cloud()
+    
     return filename
 
+def sync_predictions_to_cloud():
+    """同步预测数据到云端"""
+    predictions = load_all_predictions()
+    config = get_gist_config()
+    if config['token']:
+        success, error = cloud_save_predictions(predictions, config)
+        if success:
+            save_gist_config(config)
+            return True, None
+        return False, error
+    return False, 'No token'
+
 def load_all_predictions():
-    """加载所有已保存的预测记录"""
+    """加载所有已保存的预测记录（优先本地）"""
     predictions = {}
     if os.path.exists('predictions'):
         for file in os.listdir('predictions'):
@@ -195,14 +531,27 @@ def load_all_predictions():
     return dict(sorted(predictions.items()))
 
 def save_hit_rate(prediction_period, result_period, hit_rate_data):
-    """保存命中率到本地"""
+    """保存命中率到本地并同步云端"""
     if not os.path.exists('hit_rates'):
         os.makedirs('hit_rates')
     key = f'{prediction_period}_{result_period}'
     filepath = os.path.join('hit_rates', f'{key}_hitrate.json')
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(hit_rate_data, f, ensure_ascii=False, indent=2)
+    sync_hit_rates_to_cloud()
     return filepath
+
+def sync_hit_rates_to_cloud():
+    """同步命中率数据到云端"""
+    hit_rates = load_all_hit_rates()
+    config = get_gist_config()
+    if config['token']:
+        success, error = cloud_save_hit_rates(hit_rates, config)
+        if success:
+            save_gist_config(config)
+            return True, None
+        return False, error
+    return False, 'No token'
 
 def load_all_hit_rates():
     """加载所有已保存的命中率记录"""
@@ -232,8 +581,90 @@ with st.sidebar:
     st.write(f'当前数据量：**{len(st.session_state.lottery_data)}** 期')
     st.write(f'最新期号：**{st.session_state.lottery_data.index[-1]}**')
     st.divider()
+    st.markdown('### ☁️ 云端同步设置')
+    
+    config = get_gist_config()
+    
+    with st.expander('⚙️ GitHub Gist 配置', expanded=not bool(config['token'])):
+        st.caption('用于将数据同步到 GitHub Gist，防止程序重启后数据丢失')
+        
+        token_input = st.text_input(
+            'GitHub Personal Access Token',
+            value=config['token'],
+            type='password',
+            help='需要创建 GitHub Personal Access Token，勾选 gist 权限'
+        )
+        
+        if st.button('💾 保存 Token', use_container_width=True):
+            if token_input:
+                test_result, error = get_or_create_gist(
+                    token_input,
+                    'test_connection.txt',
+                    'Connection test',
+                    '快乐8预测系统-连接测试'
+                )
+                if test_result:
+                    config['token'] = token_input
+                    save_gist_config(config)
+                    st.success('✅ Token 验证成功！')
+                    st.rerun()
+                else:
+                    st.error(f'❌ Token 验证失败：{error}')
+            else:
+                st.warning('⚠️ 请输入 Token')
+        
+        with st.expander('📖 如何获取 GitHub Token？'):
+            st.markdown('''
+            **获取 GitHub Personal Access Token 步骤：**
+            
+            1. 登录 GitHub，点击右上角头像 → **Settings**
+            2. 左侧菜单找到 **Developer settings**
+            3. 点击 **Personal access tokens** → **Tokens (classic)**
+            4. 点击 **Generate new token (classic)**
+            5. 勾选权限：**gist**（允许创建和编辑 Gist）
+            6. 设置有效期，点击生成
+            7. 复制生成的 Token 并粘贴到上方输入框
+            
+            **注意：** Token 只会显示一次，请妥善保管！
+            ''')
+    
+    if config['token']:
+        st.success('✅ 云端同步已启用')
+        
+        with st.expander('📋 云端存储状态', expanded=False):
+            st.write(f'号码库 Gist ID：{config["lottery_gist_id"][:8] + "..." if config["lottery_gist_id"] else "未设置"}')
+            st.write(f'预测方案 Gist ID：{config["predictions_gist_id"][:8] + "..." if config["predictions_gist_id"] else "未设置"}')
+            st.write(f'命中率 Gist ID：{config["hitrates_gist_id"][:8] + "..." if config["hitrates_gist_id"] else "未设置"}')
+            
+            col_sync1, col_sync2 = st.columns(2)
+            with col_sync1:
+                if st.button('🔄 手动同步', use_container_width=True):
+                    with st.spinner('正在同步...'):
+                        df = st.session_state.lottery_data
+                        success1, _ = cloud_save_lottery_data(df, config)
+                        success2, _ = cloud_save_predictions(load_all_predictions(), config)
+                        success3, _ = cloud_save_hit_rates(load_all_hit_rates(), config)
+                        if success1 and success2 and success3:
+                            save_gist_config(config)
+                            st.success('✅ 同步成功！')
+                        else:
+                            st.error('⚠️ 部分同步失败')
+            
+            with col_sync2:
+                if st.button('📥 从云端恢复', use_container_width=True):
+                    with st.spinner('正在从云端恢复...'):
+                        cloud_df = cloud_load_lottery_data(config)
+                        if cloud_df is not None:
+                            st.session_state.lottery_data = cloud_df.sort_index(ascending=True)
+                            save_lottery_data(st.session_state.lottery_data)
+                            st.success('✅ 数据已从云端恢复！')
+                            st.rerun()
+                        else:
+                            st.warning('⚠️ 云端暂无数据')
+    
+    st.divider()
     st.markdown('### 📝 开发日志')
-    st.info('V3.0 已上线：Tab 7 完整实现8步SOP流程，自动生成预测方案')
+    st.info('V3.1 已上线：新增 GitHub Gist 云端同步功能，数据从此不丢失！')
 
 # ==================== 【模块3】主界面Tab布局 ====================
 tabs = st.tabs([
@@ -353,6 +784,8 @@ with tabs[0]:
                 if success:
                     st.success(f'✅ 期号 {new_period} 添加成功！')
                     st.info(f'号码已自动排序：{" ".join(map(str, nums))}')
+                    if len(st.session_state.lottery_data) >= 10:
+                        st.session_state['auto_run_sop'] = True
                     st.rerun()
                 else:
                     st.error(error_msg)
@@ -1807,7 +2240,150 @@ with tabs[6]:
                     else:
                         with col_3_2:
                             st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">3-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
-    else:
+    
+    if len(st.session_state.lottery_data) >= 10 and 'auto_run_sop' in st.session_state and st.session_state['auto_run_sop']:
+        last_period = st.session_state.lottery_data.index[-1]
+        n_plus_1 = str(int(last_period) + 1)
+
+        with st.spinner(f'🔄 检测到新增数据，正在自动为 {n_plus_1} 期生成预测...'):
+            data = st.session_state.lottery_data.loc[:last_period].copy()
+
+            prepared_data = step1_prepare_data(data)
+            risk_data = step2_risk_control(data, prepared_data)
+            market_data = step3_market_judge(data, prepared_data)
+            selected_numbers = step4_select_numbers(data, prepared_data, risk_data, market_data)
+            core_pool_data = step5_build_core_pool(selected_numbers, market_data, risk_data)
+            combinations = step6_build_combinations(core_pool_data['core_pool'], selected_numbers, data)
+
+            prediction_data = {
+                'period': n_plus_1,
+                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'auto_generated': True,
+                'step1_prepared': {
+                    'stats_100': prepared_data['stats_100'].to_dict(),
+                    'omission': prepared_data['omission']
+                },
+                'step2_risk': risk_data,
+                'step3_market': market_data,
+                'step4_selected': selected_numbers,
+                'step5_core_pool': core_pool_data,
+                'step6_combinations': combinations,
+                'core_pool': ' '.join(map(str, sorted(core_pool_data['core_pool']))),
+                'combinations': combinations
+            }
+
+            save_prediction(prediction_data, n_plus_1)
+            st.session_state['prediction_data'] = prediction_data
+            st.session_state['auto_run_sop'] = False
+
+        st.success(f'✅ 自动预测完成！已为 **{n_plus_1}** 期生成预测方案')
+
+        st.divider()
+        st.subheader('📌 Step 2: 刚性风控执行结果')
+        col_r1, col_r2, col_r3 = st.columns(3)
+        with col_r1:
+            st.markdown('''
+            <div style="background-color: #ffebee; padding: 12px; border-radius: 6px;">
+            <h4 style="margin-top: 0; color: #c62828;">三期连开号（剔除）</h4>
+            <p>{}</p>
+            </div>
+            '''.format(risk_data['three_consecutive'] if risk_data['three_consecutive'] else '无'), unsafe_allow_html=True)
+        with col_r2:
+            st.markdown('''
+            <div style="background-color: #fff3e0; padding: 12px; border-radius: 6px;">
+            <h4 style="margin-top: 0; color: #ef6c00;">两期连开号（降权）</h4>
+            <p>{}</p>
+            </div>
+            '''.format(risk_data['downgrade_list'] if risk_data['downgrade_list'] else '无'), unsafe_allow_html=True)
+        with col_r3:
+            st.markdown('''
+            <div style="background-color: #e3f2fd; padding: 12px; border-radius: 6px;">
+            <h4 style="margin-top: 0; color: #1565c0;">过热熔断号（剔除）</h4>
+            <p>{}</p>
+            </div>
+            '''.format(risk_data['hot_fuse'] if risk_data['hot_fuse'] else '无'), unsafe_allow_html=True)
+
+        st.divider()
+        st.subheader('📌 Step 3: 行情周期判定')
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            st.markdown('''
+            <div style="background-color: #e8f5e8; padding: 16px; border-radius: 8px; text-align: center;">
+            <h3 style="margin-top: 0; color: #2e7d32;">{}</h3>
+            <p style="margin-bottom: 0; color: #2e7d32;">判定行情类型</p>
+            </div>
+            '''.format(market_data['market_type']), unsafe_allow_html=True)
+        with col_m2:
+            st.markdown('''
+            <div style="background-color: #f3e5f5; padding: 12px; border-radius: 6px;">
+            <h4 style="margin-top: 0; color: #7b1fa2;">动态仓位分配</h4>
+            <ul style="margin-bottom: 0;">
+            <li>均衡稳胆流：{}%</li>
+            <li>温号轮动流：{}%</li>
+            <li>热号主攻流：{}%</li>
+            <li>冷号回补流：{}%</li>
+            </ul>
+            </div>
+            '''.format(
+                int(market_data["position"]["stable"]*100),
+                int(market_data["position"]["warm"]*100),
+                int(market_data["position"]["hot"]*100),
+                int(market_data["position"]["cold"]*100)
+            ), unsafe_allow_html=True)
+
+        st.divider()
+        st.subheader('📌 Step 4-5: 15码终版核心池')
+        col_c1, col_c2 = st.columns([3, 1])
+        with col_c1:
+            st.markdown('''<div style="background-color: #e3f2fd; padding: 16px; border-radius: 8px; margin-bottom: 12px;"><h4 style="margin-top: 0; color: #1565c0;">15码核心池（升序）</h4><p style="font-family: monospace; font-size: 14px;">{}</p></div>'''.format(' '.join(map(str, sorted(core_pool_data['core_pool'])))), unsafe_allow_html=True)
+
+            col_flow1, col_flow2 = st.columns(2)
+            with col_flow1:
+                st.markdown('''<div style="background-color: #e8f5e8; padding: 12px; border-radius: 6px;"><h4 style="margin-top: 0; color: #2e7d32;">S级稳胆</h4><p>{}</p></div>'''.format(selected_numbers['stable']), unsafe_allow_html=True)
+                st.markdown('''<div style="background-color: #fff3e0; padding: 12px; border-radius: 6px; margin-top: 12px;"><h4 style="margin-top: 0; color: #ef6c00;">B级热号</h4><p>{}</p></div>'''.format(selected_numbers['hot']), unsafe_allow_html=True)
+            with col_flow2:
+                st.markdown('''<div style="background-color: #fffde7; padding: 12px; border-radius: 6px;"><h4 style="margin-top: 0; color: #f57f17;">A级温号</h4><p>{}</p></div>'''.format(selected_numbers['warm']), unsafe_allow_html=True)
+                st.markdown('''<div style="background-color: #f3e5f5; padding: 12px; border-radius: 6px; margin-top: 12px;"><h4 style="margin-top: 0; color: #7b1fa2;">C级冷号</h4><p>{}</p></div>'''.format(selected_numbers['cold']), unsafe_allow_html=True)
+        with col_c2:
+            st.markdown('''<div style="background-color: #fce4ec; padding: 12px; border-radius: 6px; margin-bottom: 12px;"><h4 style="margin-top: 0; color: #c2185b;">一级备选池</h4><p>{}</p></div>'''.format(core_pool_data['backup_pool']['level1']), unsafe_allow_html=True)
+            st.markdown('''<div style="background-color: #e0f7fa; padding: 12px; border-radius: 6px; margin-bottom: 12px;"><h4 style="margin-top: 0; color: #006064;">二级对冲池</h4><p>{}</p></div>'''.format(core_pool_data['backup_pool']['level2']), unsafe_allow_html=True)
+            st.markdown('''<div style="background-color: #ffebee; padding: 12px; border-radius: 6px;"><h4 style="margin-top: 0; color: #c62828;">三级极端容错池</h4><p>{}</p></div>'''.format(core_pool_data['backup_pool']['level3']), unsafe_allow_html=True)
+
+        st.divider()
+        st.subheader('📌 Step 6: 全玩法组合打法（自动生成）')
+
+        tab_8, tab_6, tab_3 = st.tabs(['10组8码', '10组6码', '10组3码'])
+        with tab_8:
+            col_8_1, col_8_2 = st.columns(2)
+            for i, comb in enumerate(combinations['eight_code'], 1):
+                if i <= 5:
+                    with col_8_1:
+                        st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">8-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
+                else:
+                    with col_8_2:
+                        st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">8-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
+        with tab_6:
+            col_6_1, col_6_2 = st.columns(2)
+            for i, comb in enumerate(combinations['six_code'], 1):
+                if i <= 5:
+                    with col_6_1:
+                        st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">6-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
+                else:
+                    with col_6_2:
+                        st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">6-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
+        with tab_3:
+            col_3_1, col_3_2 = st.columns(2)
+            for i, comb in enumerate(combinations['three_code'], 1):
+                if i <= 5:
+                    with col_3_1:
+                        st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">3-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
+                else:
+                    with col_3_2:
+                        st.markdown('''<div style="background-color: #f5f5f5; padding: 8px; border-radius: 4px; margin-bottom: 8px;"><span style="font-weight: bold;">3-{:02d}</span>：{}</div>'''.format(i, ' '.join(map(str, sorted(comb)))), unsafe_allow_html=True)
+
+        st.info(f'📅 生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}（自动执行）')
+    
+    elif len(st.session_state.lottery_data) < 10:
         st.warning('⚠️ 数据不足 10 期，无法执行完整 SOP 流程')
 
 # ==================== 【Tab 8】预测结果存档 ====================
